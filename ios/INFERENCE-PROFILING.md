@@ -2,6 +2,14 @@
 
 Raw device and Mac captures are local artifacts. Filenames in these notes identify the captures behind the recorded measurements.
 
+## Mac launcher measurements
+
+On an 8 GiB M2 MacBook Air, the pinned 3.9 GB checkpoint with a 64 MiB allocator cache took 23–25 seconds to reach Ready with the default 16-token warm-up. The first reply began about 0.53 seconds after Ready. One run with a one-token warm-up reached Ready in 16.85 seconds and produced its first token 1.40 seconds later. OS caches were not flushed between trials.
+
+For a 41-token counting prompt and 64-token output, serial decode reached 18.22–18.29 tok/s warm. DSpark matched the greedy sequence for that prompt and reached 15.22 tok/s, with 4.79 GiB peak active MLX memory versus 4.19 GiB for serial. A repeat of the 256 MB Metal command-buffer limit test found no warm speed improvement and did not reproduce the initial startup gain. A steady Metal trace measured 18.6 tok/s with median external GPU reads of 21 GB/s and median ALU utilization of 43%. It did not identify individual kernel costs.
+
+The experimental `ios/Tools/benchmark_expert_streaming.py` compares a resident Mac decoder with a byte-budgeted cache of routed expert slices. It has yet to produce an end-to-end streamed result and is separate from iPhone chat.
+
 ## Baseline and execution paths
 
 The control is the text-only LookAtMyQuant Inkling 2 Mini 3.9 GB SQYFR v3 checkpoint at Hugging Face revision `54b4d8c2932ae5c0fc3b8a7a8c39f2633baef67e`. The pack is about 3.85 decimal GB, or 1.18 effective bits per text parameter. It uses packed NPZ shards, trellis tables and safetensors steering weights. The model has 24 physical layers and 48 logical layer visits. Layers 6–17 execute three times. Routing selects eight of 128 experts per token. The workspace has no project-scoped Git history, so the first suite identifies the local source snapshot by date and records the checkpoint and artifact hashes explicitly.
@@ -25,7 +33,7 @@ The graph exporter disables the native prefill option that materializes FP16 att
 - On the iPhone 14 Pro, the 28-file scan mapped about 3.82 GB and reported 2.33 GB peak RSS. The individual packed expert projection matched the Mac reference within 4.2e-7 in the Metal output and took about 3 ms of GPU command time, with 215 ms elapsed including setup and copies. Neither probe measures full-generation residency.
 - Prior 48-position app smoke testing matched four Mac greedy IDs. The original UI rate included the first output and did not isolate import, evaluation, streaming and tokenization. The new benchmark brackets each inference call directly.
 
-See [Mac handoff](../INKLING-HANDOFF.md) and [iOS probe history](README.md).
+See [Mac launcher measurements](#mac-launcher-measurements) and the [iOS probe guide](README.md).
 
 ## Upstream audit
 

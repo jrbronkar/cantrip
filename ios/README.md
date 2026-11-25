@@ -77,7 +77,22 @@ The iPhone 14 Pro matched token `152717` in 2.919 seconds, including graph impor
 
 ## Chat with Inkling 2 Mini
 
-Tap **Chat with Inkling 2 Mini** on the app's main screen, or use the development launch flag `--open-chat`. Chat uses the staged full-decode graphs and local tokenizer. Follow the [iPhone profiling setup](INFERENCE-PROFILING.md#interactive-24-layer-chat) to stage the fixture and sign the test build.
+After installing a signed build, stage the checkpoint manifest, tokenizer files, and exported layer graphs in the app container. Use the same pinned checkpoint for both the tokenizer and graphs.
+
+```sh
+checkpoint=hf/hub/models--shinmegamiboson--Inkling-2-Mini-LookAtMyQuant-3.9GB/snapshots/54b4d8c2932ae5c0fc3b8a7a8c39f2633baef67e
+staging=$(mktemp -d)/inkling-3.9gb-checkpoint
+mkdir "$staging"
+cp -L "$checkpoint/manifest.json" "$checkpoint/config.json" "$checkpoint/tokenizer.json" \
+  "$checkpoint/tokenizer_config.json" "$checkpoint/special_tokens_map.json" "$checkpoint/chat_template.jinja" "$staging/"
+.venv/bin/python -B ios/Tools/export_full_decode.py "$checkpoint" \
+  inference-bench-3.9gb/iphone-first-48-suite.json "$staging/inkling-full-decode" --serial-only --tokens 4
+xcrun devicectl device copy to --device "$device" --domain-type appDataContainer \
+  --domain-identifier "$bundle_id" --source "$staging" \
+  --destination Documents/inkling-3.9gb-checkpoint --timeout 650
+```
+
+Set `device` to the ID shown by `xcrun devicectl list devices` and `bundle_id` to the signed app identifier (`local.inkling.probe` by default). Once staged, tap **Chat with Inkling 2 Mini** or use the development launch flag `--open-chat`.
 
 Chat warms the 24-layer async decoder when it opens. The 256-token context reserves at least 64 tokens for the reply. Chat drops older complete turns when needed, streams generated text, and saves completed turns and their timing locally.
 
@@ -85,13 +100,11 @@ Chat warms the 24-layer async decoder when it opens. The 256-token context reser
 
 - The probe uses Swift and SwiftUI. The full-model runner also uses MLX Swift. The packed embedding and attention algorithms are adapted from LookAtMyQuant at revision `9dc5cbf7adb08cc41b5ba45c6313556e16f30bdc`. The app bundles and displays the full upstream MIT notice. [LookAtMyQuant](https://github.com/ShinMegamiBoson/lookatmyquant/tree/9dc5cbf7adb08cc41b5ba45c6313556e16f30bdc)
 - Thinking Machines Lab publishes Inkling 2 Mini under Apache 2.0. The locally cached model card identifies this checkpoint as ShinMegamiBoson’s SQYFR v3 quantization of those weights, also labeled Apache 2.0. The app ships without checkpoint data or fixtures. Keep generated fixtures local during development. If distributing the checkpoint or fixtures, preserve applicable upstream notices, include the Apache 2.0 license, and identify modifications including quantization or extraction. [Original model](https://huggingface.co/thinkingmachines/Inkling-2-Mini) · [Quantized checkpoint](https://huggingface.co/shinmegamiboson/Inkling-2-Mini-LookAtMyQuant-3.9GB)
-- For full generation, evaluate the MIT-licensed MLX Swift as the tensor backend and reuse the MIT LookAtMyQuant implementation as the reference for its custom kernels. The existing 3.85 GB checkpoint uses NPZ and safetensors artifacts with custom packing. Preserve that packing in the mobile loader. Stock GGUF support is a separate route using different weights. [MLX Swift](https://github.com/ml-explore/mlx-swift) · [llama.cpp Inkling GGUF](https://huggingface.co/ggml-org/Inkling-2-Mini-GGUF)
-
-Use the existing packed Mac runtime as the reference when bringing up an iPhone backend for this checkpoint. Keep the CPU probe as a parity test for the loader and kernels. Before adding chat, test a complete greedy decode on physical hardware with short context, serial generation, and no drafter. Record first-token latency, peak process memory, and sustained decode before deciding which iPhones to support. The Mac handoff recorded 4.19 GiB peak active MLX memory for short serial runs. Some iPhones support the iOS increased-memory-limit entitlement. Measure how much memory the app can use on each test phone. [Apple’s entitlement documentation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.kernel.increased-memory-limit)
+- Full-model generation uses [MLX Swift](https://github.com/ml-explore/mlx-swift) to run functions exported from the pinned packed checkpoint.
 
 ## Conversation context
 
-`ConversationContext.swift` saves each thread in Application Support using atomic writes and iOS file protection. To prepare a reply, it formats the prompt with Inkling’s text-only template and counts tokens through a tokenizer supplied by the caller. If the prompt exceeds the available budget after reserving space for the reply, it drops the oldest complete turns until the prompt fits. It reports how many turns it dropped and keeps the full transcript on disk. The generation loop can use the prepared prompt to check whether it starts with exactly the tokens in the live KV cache. The app still needs to connect an on-device tokenizer, the generation loop, and a chat screen.
+`ConversationContext.swift` saves each thread in Application Support using atomic writes and iOS file protection. To prepare a reply, it formats the prompt with Inkling’s text-only template and counts tokens through a tokenizer supplied by the caller. If the prompt exceeds the available budget after reserving space for the reply, it drops the oldest complete turns until the prompt fits. It reports how many turns it dropped and keeps the full transcript on disk. The generation loop reuses its live KV and convolution state when the new token sequence starts with the exact cached prefix. After relaunch, the app reloads the saved transcript and prefills it again.
 
 ## Physical iPhone test plan
 
@@ -102,8 +115,8 @@ Use the existing packed Mac runtime as the reference when bringing up an iPhone 
 3. On iPhone, enable **Settings → Privacy & Security → Developer Mode** after pairing. Restart and confirm when prompted. Select the phone as the Xcode run destination and press **⌘R**. [Apple's Developer Mode instructions](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
 4. Generate the layer 0 fixture using the command above. AirDrop it to the phone and save it under **On My iPhone** in Files. Turn on Airplane Mode and verify Wi-Fi is off, then import the fixture in Inkling Probe. Expect eight embedding checks and eight attention checks to pass, including after force-quitting and reopening the app. Record the iPhone model and iOS version. For each failed check, record the stage and its error. This test uses only the fixture.
 
-### Test chat once the app can generate replies
+### Test interactive chat
 
-- Start with a short single-turn offline run on the highest-memory supported phone available, then repeat on the intended 8 GB target if available. Use a release build with serial decode, 512 total context tokens, and a 64-token reply cap for the first run. Record the checkpoint revision, model load time, time to first visible text, sustained tokens per second, peak process memory, and thermal state. Profile a separate run in Instruments. Then run with the debugger detached to see whether iOS terminates the app under memory pressure.
+- Start with a short single-turn offline run in standard chat on a signed Release build, then send a second prompt in the same thread. Record the checkpoint revision, model load time, time to first visible text, sustained tokens per second, peak process memory, and thermal state. Profile a separate run in Instruments. Then run with the debugger detached to see whether iOS terminates the app under memory pressure.
 - Stay offline. In one thread, say “My orchard key is called Cobalt Finch.” Ask an unrelated question, then ask “What was my orchard key called?” Force-quit, reopen the thread, and ask again. Expect “Cobalt Finch” both times. Open a new thread and verify that its prepared prompt contains no messages from the first.
 - Run with a deliberately small context budget. Verify that the UI shows when older turns are omitted, the saved transcript still contains them, and the assistant can recall a detail from the newest retained turn. Compare cached and rebuilt runs with greedy decoding and the same token IDs. Check cancellation and retry, and verify that a failed or cancelled reply does not leave half a completed turn in the transcript.
