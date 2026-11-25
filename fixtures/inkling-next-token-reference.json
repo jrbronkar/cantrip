@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "checkpointRevision": "54b4d8c2932ae5c0fc3b8a7a8c39f2633baef67e",
+  "prompt": "The capital of France is",
+  "inputIDs": [
+    371,
+    151451,
+    149879,
+    151194,
+    149884
+  ],
+  "expectedTokenID": 152717,
+  "expectedText": " Paris"
+}
